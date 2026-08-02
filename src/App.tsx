@@ -4,9 +4,10 @@
  */
 
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { ConversionMode, DirectionMode, ScriptCode } from './types';
+import { ConversionMode, DirectionMode, ScriptCode, HistoryItem } from './types';
 import { encodeToMorse, decodeFromMorse, generateWavBlob } from './engine';
 import { SAMPLE_TEXTS, SCRIPT_LIST } from './constants';
+import { useLocalStorage } from './hooks';
 
 export default function App() {
   const [theme, setTheme] = useState('dark');
@@ -21,6 +22,7 @@ export default function App() {
   const [activeSymbolIndex, setActiveSymbolIndex] = useState(-1);
   const [isPulseActive, setIsPulseActive] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [history, setHistory] = useLocalStorage<HistoryItem[]>('morse_history', []);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const timeoutsRef = useRef<number[]>([]);
@@ -145,6 +147,32 @@ export default function App() {
     showToast('Downloaded .WAV audio file');
   };
 
+  const handleSaveToHistory = useCallback(() => {
+    if (!inputText.trim()) return;
+    const newItem: HistoryItem = {
+      id: Date.now().toString(),
+      timestamp: Date.now(),
+      originalText: inputText,
+      morseCode: result.morseCode,
+      mode,
+      script: result.detectedScript,
+    };
+    setHistory((prev) => {
+      // Avoid duplicate consecutive saves
+      if (prev.length > 0 && prev[0].originalText === inputText && prev[0].mode === mode) {
+        return prev;
+      }
+      return [newItem, ...prev.slice(0, 19)];
+    });
+  }, [inputText, result, mode, setHistory]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      handleSaveToHistory();
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [inputText, handleSaveToHistory]);
+
   return (
     <div className="container">
       {/* Header */}
@@ -253,6 +281,37 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* History Panel */}
+      {history.length > 0 && (
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+            <label style={{ fontWeight: 600 }}>Local Conversion History</label>
+            <button className="btn btn-secondary" style={{ padding: '0.2rem 0.6rem', minHeight: '32px' }} onClick={() => setHistory([])}>
+              Clear History
+            </button>
+          </div>
+          <div style={{ maxHeight: '150px', overflowY: 'auto' }}>
+            {history.map((item) => (
+              <div
+                key={item.id}
+                onClick={() => {
+                  setInputText(item.originalText);
+                  setMode(item.mode);
+                }}
+                style={{
+                  padding: '0.4rem',
+                  borderBottom: '1px solid var(--card-border)',
+                  cursor: 'pointer',
+                  fontSize: '0.85rem',
+                }}
+              >
+                <strong>[{item.mode.toUpperCase()}]</strong> {item.originalText.slice(0, 40)}{item.originalText.length > 40 ? '...' : ''}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {toast && <div className="toast">{toast}</div>}
     </div>
