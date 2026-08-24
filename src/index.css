@@ -112,3 +112,40 @@ body {
   background-color: var(--accent-amber);
   box-shadow: 0 0 16px var(--accent-amber);
 }
+
+.chat-markdown-body {
+  font-size: 0.88rem;
+  line-height: 1.6;
+}
+.chat-markdown-body p {
+  margin-bottom: 0.5rem;
+}
+.chat-markdown-body p:last-child {
+  margin-bottom: 0;
+}
+.chat-markdown-body ul, .chat-markdown-body ol {
+  margin-left: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+.chat-markdown-body li {
+  margin-bottom: 0.25rem;
+}
+.chat-markdown-body code {
+  background-color: rgba(0, 0, 0, 0.3);
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+.chat-markdown-body pre {
+  background-color: rgba(0, 0, 0, 0.4);
+  padding: 0.6rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin-bottom: 0.5rem;
+}
+.chat-markdown-body pre code {
+  background-color: transparent;
+  padding: 0;
+}
+

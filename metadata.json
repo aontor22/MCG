@@ -1,6 +1,6 @@
 {
   "name": "Morse Universal",
   "description": "Universal Multilingual Morse Code Engine & Converter",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
