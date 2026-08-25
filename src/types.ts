@@ -51,6 +51,18 @@ export interface TimingDurations {
   wordGap: number;
 }
 
+export type FlashColor = 'amber' | 'white' | 'green' | 'cyan' | 'red';
+export type FlashMode = 'both' | 'ambient-screen' | 'beacon-lamp' | 'minimal-pill' | 'off';
+
+export interface VisualFlashConfig {
+  enabled: boolean;
+  mode: FlashMode;
+  color: FlashColor;
+  intensity: number; // 0.2 to 1.0
+  pulseCardBorders: boolean;
+  highlightActiveChar: boolean;
+}
+
 export interface PlaybackState {
   isPlaying: boolean;
   isPaused: boolean;
@@ -96,4 +108,16 @@ export interface ChatRolePreset {
 }
 
 export type LiveVoiceState = 'idle' | 'connecting' | 'connected' | 'error';
+
+export type PracticeCategory = 'letters' | 'numbers' | 'mixed' | 'words' | 'qcodes' | 'custom';
+
+export interface PracticeStats {
+  totalAttempts: number;
+  correctAttempts: number;
+  currentStreak: number;
+  bestStreak: number;
+  characterMistakes: Record<string, number>;
+  characterSuccesses: Record<string, number>;
+}
+
 

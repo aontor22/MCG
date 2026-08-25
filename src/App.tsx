@@ -15,8 +15,9 @@ import {
   Volume2,
   Sparkles,
   Star,
+  GraduationCap,
 } from 'lucide-react';
-import { ConversionMode, DirectionMode, ScriptCode, HistoryItem, MorseTimingConfig } from './types';
+import { ConversionMode, DirectionMode, ScriptCode, HistoryItem, MorseTimingConfig, VisualFlashConfig } from './types';
 import { encodeToMorse, decodeFromMorse, generateWavBlob, calculateTimingDurations } from './engine';
 import { SAMPLE_TEXTS, SCRIPT_LIST } from './constants';
 import { useLocalStorage } from './hooks';
@@ -25,8 +26,11 @@ import { GeminiChatbot } from './components/GeminiChatbot';
 import { LiveVoiceConversation } from './components/LiveVoiceConversation';
 import { AudioTimingControls } from './components/AudioTimingControls';
 import { HistoryAndFavorites } from './components/HistoryAndFavorites';
+import { VisualFlashControls, VisualFlashOverlay } from './components/VisualFlashControls';
+import { MorsePracticeMode } from './components/MorsePracticeMode';
+import { CharacterReferenceDrawer } from './components/CharacterReferenceDrawer';
 
-type ActiveTab = 'converter' | 'transcribe' | 'chat' | 'live';
+type ActiveTab = 'converter' | 'practice' | 'transcribe' | 'chat' | 'live';
 
 export default function App() {
   const [theme, setTheme] = useState('dark');
@@ -50,14 +54,26 @@ export default function App() {
     farnsworthCharWpm: 20,
     farnsworthOverallWpm: 10,
   });
+  const [flashConfig, setFlashConfig] = useLocalStorage<VisualFlashConfig>('morse_visual_flash_config', {
+    enabled: true,
+    mode: 'both',
+    color: 'amber',
+    intensity: 0.75,
+    pulseCardBorders: true,
+    highlightActiveChar: true,
+  });
   const [isPlaying, setIsPlaying] = useState(false);
   const [activeSymbolIndex, setActiveSymbolIndex] = useState(-1);
   const [isPulseActive, setIsPulseActive] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [history, setHistory] = useLocalStorage<HistoryItem[]>('morse_history', []);
+  const [autoPlayOnChange, setAutoPlayOnChange] = useLocalStorage<boolean>('morse_auto_play_on_change', false);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const timeoutsRef = useRef<number[]>([]);
+  const manualOscRef = useRef<{ osc: OscillatorNode; gain: GainNode } | null>(null);
+  const isFirstMount = useRef<boolean>(true);
+  const previousInputRef = useRef<string>(inputText);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -106,6 +122,57 @@ export default function App() {
     setIsPlaying(false);
     setIsPulseActive(false);
     setActiveSymbolIndex(-1);
+
+    if (manualOscRef.current) {
+      try {
+        manualOscRef.current.osc.stop();
+        manualOscRef.current.osc.disconnect();
+      } catch (_) {}
+      manualOscRef.current = null;
+    }
+  }, []);
+
+  const handleManualFlashStart = useCallback(() => {
+    setIsPulseActive(true);
+    try {
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!audioCtxRef.current) audioCtxRef.current = new AudioCtx();
+      const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') ctx.resume();
+
+      if (!manualOscRef.current) {
+        const osc = ctx.createOscillator();
+        const gainNode = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(frequency, ctx.currentTime);
+        gainNode.gain.setValueAtTime(0, ctx.currentTime);
+        gainNode.gain.linearRampToValueAtTime(volume, ctx.currentTime + 0.005);
+        osc.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        osc.start();
+        manualOscRef.current = { osc, gain: gainNode };
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, [frequency, volume]);
+
+  const handleManualFlashEnd = useCallback(() => {
+    setIsPulseActive(false);
+    if (manualOscRef.current && audioCtxRef.current) {
+      try {
+        const ctx = audioCtxRef.current;
+        const { osc, gain } = manualOscRef.current;
+        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.005);
+        setTimeout(() => {
+          try {
+            osc.stop();
+            osc.disconnect();
+          } catch (_) {}
+        }, 10);
+      } catch (_) {}
+      manualOscRef.current = null;
+    }
   }, []);
 
   const playAudio = useCallback(() => {
@@ -303,6 +370,19 @@ export default function App() {
 
           osc.start(currentTime);
           osc.stop(currentTime + dur);
+
+          const startMs = (currentTime - ctx.currentTime) * 1000;
+          const stopMs = (currentTime + dur - ctx.currentTime) * 1000;
+
+          const t1 = window.setTimeout(() => {
+            setIsPulseActive(true);
+          }, Math.max(0, startMs));
+
+          const t2 = window.setTimeout(() => {
+            setIsPulseActive(false);
+          }, Math.max(0, stopMs));
+
+          timeoutsRef.current.push(t1, t2);
           currentTime += dur + trailingGap;
         } else {
           currentTime += dur;
@@ -359,9 +439,35 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [inputText, handleSaveToHistory]);
 
+  // Auto-play Morse audio whenever input text changes (debounced)
+  useEffect(() => {
+    if (isFirstMount.current) {
+      isFirstMount.current = false;
+      previousInputRef.current = inputText;
+      return;
+    }
+
+    if (previousInputRef.current === inputText) {
+      return;
+    }
+    previousInputRef.current = inputText;
+
+    if (!autoPlayOnChange || !result.morseCode.trim() || activeTab !== 'converter') {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      playAudio();
+    }, 450);
+
+    return () => clearTimeout(timer);
+  }, [inputText, autoPlayOnChange, playAudio, result.morseCode, activeTab]);
+
   return (
-    <div className="container">
-      {/* Header */}
+    <>
+      <VisualFlashOverlay config={flashConfig} isPulseActive={isPulseActive} />
+      <div className="container">
+        {/* Header */}
       <div className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.8rem' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -412,6 +518,17 @@ export default function App() {
         >
           <Binary size={15} />
           <span>Morse Engine</span>
+        </button>
+
+        <button
+          id="tab-practice-btn"
+          type="button"
+          className={`btn ${activeTab === 'practice' ? 'btn-primary' : 'btn-secondary'}`}
+          onClick={() => setActiveTab('practice')}
+          style={{ padding: '0.4rem 0.85rem', fontSize: '0.86rem', flexShrink: 0 }}
+        >
+          <GraduationCap size={15} />
+          <span>Practice Academy</span>
         </button>
 
         <button
@@ -550,9 +667,86 @@ export default function App() {
           )}
 
           {/* Morse Output */}
-          <div className="card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '0.4rem' }}>
-              <label style={{ fontWeight: 600 }}>Morse Code Result</label>
+          <div
+            className={`card card-flash-pulse ${
+              flashConfig.pulseCardBorders && isPulseActive ? `pulsing-${flashConfig.color}` : ''
+            }`}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <label style={{ fontWeight: 600, fontSize: '0.95rem', margin: 0 }}>Morse Code Result</label>
+                
+                {/* Auto-Play on Text Change Toggle Switch */}
+                <label
+                  id="auto-play-toggle-label"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.45rem',
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    padding: '0.2rem 0.55rem',
+                    borderRadius: '20px',
+                    backgroundColor: autoPlayOnChange ? 'rgba(245, 158, 11, 0.15)' : 'rgba(255, 255, 255, 0.05)',
+                    border: `1px solid ${autoPlayOnChange ? 'var(--accent-amber)' : 'var(--card-border)'}`,
+                    transition: 'all 0.2s ease',
+                  }}
+                  title="Automatically play Morse audio tone whenever input text changes"
+                >
+                  <input
+                    id="auto-play-input-toggle"
+                    type="checkbox"
+                    checked={autoPlayOnChange}
+                    onChange={(e) => {
+                      const enabled = e.target.checked;
+                      setAutoPlayOnChange(enabled);
+                      showToast(enabled ? '🔊 Auto-Play on text edit enabled' : '🔇 Auto-Play on text edit disabled');
+                    }}
+                    style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }}
+                  />
+                  {/* Custom Toggle Track & Thumb */}
+                  <div
+                    style={{
+                      width: '28px',
+                      height: '16px',
+                      borderRadius: '10px',
+                      backgroundColor: autoPlayOnChange ? 'var(--accent-amber)' : '#475569',
+                      position: 'relative',
+                      transition: 'background-color 0.2s ease',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: '12px',
+                        height: '12px',
+                        borderRadius: '50%',
+                        backgroundColor: '#ffffff',
+                        position: 'absolute',
+                        top: '2px',
+                        left: autoPlayOnChange ? '14px' : '2px',
+                        transition: 'left 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                        boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                      }}
+                    />
+                  </div>
+                  <span
+                    style={{
+                      fontSize: '0.74rem',
+                      fontWeight: 600,
+                      color: autoPlayOnChange ? 'var(--accent-amber)' : 'var(--text-secondary)',
+                      whiteSpace: 'nowrap',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.25rem',
+                    }}
+                  >
+                    <Volume2 size={12} />
+                    Auto-Play
+                  </span>
+                </label>
+              </div>
+
               <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
                 <button
                   id="pin-morse-result-btn"
@@ -587,16 +781,57 @@ export default function App() {
               </div>
             </div>
             <div className="textarea-input" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', minHeight: '110px' }}>
-              {result.morseCode.split('').map((char, i) => (
-                <span
-                  key={i}
-                  style={i === activeSymbolIndex ? { backgroundColor: 'var(--accent-amber)', color: '#000', borderRadius: '2px' } : {}}
-                >
-                  {char}
-                </span>
-              ))}
+              {result.morseCode.split('').map((char, i) => {
+                const isActive = i === activeSymbolIndex;
+                let charStyle: React.CSSProperties | undefined = undefined;
+                if (isActive && flashConfig.highlightActiveChar) {
+                  const colorMap: Record<string, { bg: string; text: string; glow: string }> = {
+                    amber: { bg: '#f59e0b', text: '#000', glow: '#f59e0b' },
+                    white: { bg: '#ffffff', text: '#000', glow: '#ffffff' },
+                    green: { bg: '#22c55e', text: '#000', glow: '#22c55e' },
+                    cyan: { bg: '#06b6d4', text: '#000', glow: '#06b6d4' },
+                    red: { bg: '#ef4444', text: '#fff', glow: '#ef4444' },
+                  };
+                  const c = colorMap[flashConfig.color] || colorMap.amber;
+                  charStyle = {
+                    backgroundColor: c.bg,
+                    color: c.text,
+                    borderRadius: '2px',
+                    boxShadow: `0 0 10px ${c.glow}`,
+                    fontWeight: 'bold',
+                  };
+                }
+                return (
+                  <span key={i} style={charStyle}>
+                    {char}
+                  </span>
+                );
+              })}
             </div>
           </div>
+
+          {/* Expandable Character Reference & Output Dictionary Drawer */}
+          <CharacterReferenceDrawer
+            inputText={inputText}
+            morseOutput={result.morseCode}
+            romanizedText={result.romanizedText}
+            mode={mode}
+            direction={direction}
+            wpm={wpm}
+            frequency={frequency}
+            volume={volume}
+            showToast={showToast}
+          />
+
+          {/* Visual Flash & Optical Beacon Synchronizer */}
+          <VisualFlashControls
+            config={flashConfig}
+            onConfigChange={setFlashConfig}
+            isPulseActive={isPulseActive}
+            activeSymbol={activeSymbolIndex >= 0 ? result.morseCode[activeSymbolIndex] : undefined}
+            onManualTriggerStart={handleManualFlashStart}
+            onManualTriggerEnd={handleManualFlashEnd}
+          />
 
           {/* Audio Timing & Radio Protocol Controls */}
           <AudioTimingControls
@@ -629,6 +864,18 @@ export default function App() {
         </>
       )}
 
+      {/* TAB: PRACTICE ACADEMY */}
+      {activeTab === 'practice' && (
+        <MorsePracticeMode
+          wpm={wpm}
+          frequency={frequency}
+          volume={volume}
+          timingConfig={timingConfig}
+          flashConfig={flashConfig}
+          showToast={showToast}
+        />
+      )}
+
       {/* TAB 2: AUDIO TRANSCRIPTION */}
       {activeTab === 'transcribe' && (
         <AudioTranscriber
@@ -655,6 +902,7 @@ export default function App() {
 
       {toast && <div className="toast">{toast}</div>}
     </div>
+  </>
   );
 }
 
