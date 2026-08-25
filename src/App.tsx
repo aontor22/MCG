@@ -16,6 +16,8 @@ import {
   Sparkles,
   Star,
   GraduationCap,
+  Undo2,
+  Redo2,
 } from 'lucide-react';
 import { ConversionMode, DirectionMode, ScriptCode, HistoryItem, MorseTimingConfig, VisualFlashConfig } from './types';
 import { encodeToMorse, decodeFromMorse, generateWavBlob, calculateTimingDurations } from './engine';
@@ -69,6 +71,12 @@ export default function App() {
   const [history, setHistory] = useLocalStorage<HistoryItem[]>('morse_history', []);
   const [autoPlayOnChange, setAutoPlayOnChange] = useLocalStorage<boolean>('morse_auto_play_on_change', false);
 
+  // Undo / Redo Stack State for Source Text Input
+  const [undoStack, setUndoStack] = useState<string[]>([]);
+  const [redoStack, setRedoStack] = useState<string[]>([]);
+  const undoTimerRef = useRef<number | null>(null);
+  const lastCommittedTextRef = useRef<string>(inputText);
+
   const audioCtxRef = useRef<AudioContext | null>(null);
   const timeoutsRef = useRef<number[]>([]);
   const manualOscRef = useRef<{ osc: OscillatorNode; gain: GainNode } | null>(null);
@@ -84,22 +92,101 @@ export default function App() {
     setTimeout(() => setToast(null), 2500);
   };
 
+  const pushUndoSnapshot = useCallback((snapshotText: string) => {
+    setUndoStack((prev) => {
+      if (prev.length > 0 && prev[prev.length - 1] === snapshotText) {
+        return prev;
+      }
+      return [...prev.slice(-49), snapshotText];
+    });
+    setRedoStack([]);
+  }, []);
+
+  const handleSetInputTextImmediate = useCallback(
+    (newText: string, toastMessage?: string) => {
+      if (newText === inputText) return;
+      if (undoTimerRef.current) {
+        clearTimeout(undoTimerRef.current);
+        undoTimerRef.current = null;
+      }
+      pushUndoSnapshot(inputText);
+      lastCommittedTextRef.current = newText;
+      setInputText(newText);
+      if (toastMessage) {
+        showToast(toastMessage);
+      }
+    },
+    [inputText, pushUndoSnapshot]
+  );
+
+  const handleTextAreaChange = useCallback(
+    (newVal: string) => {
+      setInputText(newVal);
+
+      if (!undoTimerRef.current) {
+        pushUndoSnapshot(lastCommittedTextRef.current);
+      } else {
+        clearTimeout(undoTimerRef.current);
+      }
+
+      undoTimerRef.current = window.setTimeout(() => {
+        lastCommittedTextRef.current = newVal;
+        undoTimerRef.current = null;
+      }, 550);
+    },
+    [pushUndoSnapshot]
+  );
+
+  const handleUndo = useCallback(() => {
+    if (undoTimerRef.current) {
+      clearTimeout(undoTimerRef.current);
+      undoTimerRef.current = null;
+    }
+
+    if (undoStack.length === 0) {
+      showToast('Nothing to undo');
+      return;
+    }
+
+    const prevText = undoStack[undoStack.length - 1];
+    setUndoStack((prev) => prev.slice(0, prev.length - 1));
+    setRedoStack((prev) => [...prev, inputText]);
+    setInputText(prevText);
+    lastCommittedTextRef.current = prevText;
+    showToast('↩ Undone recent edit');
+  }, [undoStack, inputText]);
+
+  const handleRedo = useCallback(() => {
+    if (undoTimerRef.current) {
+      clearTimeout(undoTimerRef.current);
+      undoTimerRef.current = null;
+    }
+
+    if (redoStack.length === 0) {
+      showToast('Nothing to redo');
+      return;
+    }
+
+    const nextText = redoStack[redoStack.length - 1];
+    setRedoStack((prev) => prev.slice(0, prev.length - 1));
+    setUndoStack((prev) => [...prev, inputText]);
+    setInputText(nextText);
+    lastCommittedTextRef.current = nextText;
+    showToast('↪ Redone edit');
+  }, [redoStack, inputText]);
+
   const activeDurations = useMemo(() => {
     return calculateTimingDurations(timingConfig, wpm);
   }, [timingConfig, wpm]);
 
   const handleTranscribeComplete = (text: string, insertMode: 'append' | 'replace' = 'replace') => {
-    if (insertMode === 'append') {
-      setInputText((prev) => (prev ? `${prev} ${text}` : text));
-    } else {
-      setInputText(text);
-    }
+    const nextVal = insertMode === 'append' ? (inputText ? `${inputText} ${text}` : text) : text;
+    handleSetInputTextImmediate(nextVal, 'Transcribed audio into Source Text');
   };
 
   const handleInsertFromChat = (text: string) => {
-    setInputText(text);
+    handleSetInputTextImmediate(text, 'Loaded text into Morse Converter');
     setActiveTab('converter');
-    showToast('Loaded text into Morse Converter');
   };
 
   const result = useMemo(() => {
@@ -397,7 +484,7 @@ export default function App() {
   );
 
   const handleLoadHistoryItem = (item: HistoryItem) => {
-    setInputText(item.originalText);
+    handleSetInputTextImmediate(item.originalText);
     setMode(item.mode);
     if (item.script && item.script !== 'auto') {
       setScript(item.script);
@@ -611,7 +698,7 @@ export default function App() {
                   key={s.label}
                   className="btn btn-secondary"
                   style={{ padding: '0.2rem 0.6rem', fontSize: '0.8rem' }}
-                  onClick={() => setInputText(s.text)}
+                  onClick={() => handleSetInputTextImmediate(s.text, `Loaded "${s.label}" preset`)}
                 >
                   {s.label}
                 </button>
@@ -621,9 +708,75 @@ export default function App() {
 
           {/* Source Input */}
           <div className="card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', alignItems: 'center' }}>
-              <label style={{ fontWeight: 600 }}>{direction === 'textToMorse' ? 'Source Text Input' : 'Morse Input (. / -)'}</label>
-              <div style={{ display: 'flex', gap: '0.4rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', alignItems: 'center', flexWrap: 'wrap', gap: '0.4rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <label style={{ fontWeight: 600, margin: 0 }}>
+                  {direction === 'textToMorse' ? 'Source Text Input' : 'Morse Input (. / -)'}
+                </label>
+                {(undoStack.length > 0 || redoStack.length > 0) && (
+                  <span
+                    style={{
+                      fontSize: '0.7rem',
+                      fontWeight: 600,
+                      padding: '0.1rem 0.4rem',
+                      borderRadius: '10px',
+                      backgroundColor: 'rgba(255, 255, 255, 0.07)',
+                      color: 'var(--text-secondary)',
+                    }}
+                    title="Undo / Redo stack depth"
+                  >
+                    {undoStack.length} ↩ / {redoStack.length} ↪
+                  </span>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.35rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                {/* Undo Button */}
+                <button
+                  id="source-input-undo-btn"
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{
+                    padding: '0.2rem 0.55rem',
+                    fontSize: '0.78rem',
+                    gap: '0.3rem',
+                    opacity: undoStack.length === 0 ? 0.45 : 1,
+                    cursor: undoStack.length === 0 ? 'not-allowed' : 'pointer',
+                  }}
+                  disabled={undoStack.length === 0}
+                  onClick={handleUndo}
+                  title={`Undo recent text edit (Ctrl+Z / Cmd+Z) — ${undoStack.length} state${undoStack.length === 1 ? '' : 's'} available`}
+                >
+                  <Undo2 size={13} />
+                  <span>Undo</span>
+                  {undoStack.length > 0 && (
+                    <span style={{ fontSize: '0.68rem', opacity: 0.8 }}>({undoStack.length})</span>
+                  )}
+                </button>
+
+                {/* Redo Button */}
+                <button
+                  id="source-input-redo-btn"
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{
+                    padding: '0.2rem 0.55rem',
+                    fontSize: '0.78rem',
+                    gap: '0.3rem',
+                    opacity: redoStack.length === 0 ? 0.45 : 1,
+                    cursor: redoStack.length === 0 ? 'not-allowed' : 'pointer',
+                  }}
+                  disabled={redoStack.length === 0}
+                  onClick={handleRedo}
+                  title={`Redo text edit (Ctrl+Y / Cmd+Shift+Z) — ${redoStack.length} state${redoStack.length === 1 ? '' : 's'} available`}
+                >
+                  <Redo2 size={13} />
+                  <span>Redo</span>
+                  {redoStack.length > 0 && (
+                    <span style={{ fontSize: '0.68rem', opacity: 0.8 }}>({redoStack.length})</span>
+                  )}
+                </button>
+
                 <button
                   type="button"
                   className="btn btn-secondary"
@@ -634,19 +787,46 @@ export default function App() {
                   <Mic size={13} style={{ color: 'var(--accent-amber)' }} />
                   <span>Mic Transcribe</span>
                 </button>
-                <button className="btn btn-secondary" style={{ padding: '0.2rem 0.6rem', fontSize: '0.78rem' }} onClick={() => setInputText('')}>
+
+                <button
+                  id="source-input-clear-btn"
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ padding: '0.2rem 0.6rem', fontSize: '0.78rem' }}
+                  onClick={() => handleSetInputTextImmediate('', 'Cleared text input (use Undo to restore)')}
+                  title="Clear input text (recoverable with Undo)"
+                >
                   Clear
                 </button>
               </div>
             </div>
+
             <textarea
+              id="source-text-input"
               className="textarea-input"
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              placeholder="Type or paste input here..."
+              onChange={(e) => handleTextAreaChange(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+                  if (e.shiftKey) {
+                    e.preventDefault();
+                    handleRedo();
+                  } else {
+                    e.preventDefault();
+                    handleUndo();
+                  }
+                } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+                  e.preventDefault();
+                  handleRedo();
+                }
+              }}
+              placeholder="Type or paste input here... (Ctrl+Z to undo, Ctrl+Y to redo)"
             />
-            <div className="counter-badge">
-              <span>Chars: {inputText.length}</span>
+            <div className="counter-badge" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: '0.6rem' }}>
+                <span>Chars: {inputText.length}</span>
+                <span>Words: {inputText.trim() ? inputText.trim().split(/\s+/).length : 0}</span>
+              </div>
               <span>Detected Script: {result.detectedScript}</span>
             </div>
           </div>
@@ -661,7 +841,7 @@ export default function App() {
                 className="textarea-input"
                 style={{ minHeight: '70px' }}
                 value={result.romanizedText}
-                onChange={(e) => setInputText(e.target.value)}
+                onChange={(e) => handleTextAreaChange(e.target.value)}
               />
             </div>
           )}
